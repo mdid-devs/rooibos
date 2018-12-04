@@ -34,14 +34,13 @@ class Collection(models.Model):
     agreement = models.TextField(blank=True, null=True)
     password = models.CharField(max_length=32, blank=True, serialize=False)
     order = models.IntegerField(blank=False, null=False, default=100)
-    password = models.CharField(max_length=32, blank=True)
-    order = models.IntegerField(blank=False, null=False, default=100)
 
     def natural_key(self):
         return (self.name,)
 
     class Meta:
         ordering = ['order', 'title']
+        app_label = 'data'
 
     def save(self, **kwargs):
         unique_slug(self, slug_source='title', slug_field='name',
@@ -106,6 +105,7 @@ class CollectionItem(models.Model):
 
     def natural_key(self):
         return self.collection.natural_key() + self.record.natural_key()
+
     natural_key.dependencies = ['data.Collection', 'data.Record']
 
     def __unicode__(self):
@@ -114,6 +114,9 @@ class CollectionItem(models.Model):
             self.collection_id,
             'hidden' if self.hidden else ''
         )
+
+    class Meta:
+        app_label = 'data'
 
 
 def _records_with_individual_acl_by_ids(ids):
@@ -138,6 +141,9 @@ class Record(models.Model):
     manager = models.CharField(max_length=50, null=True, blank=True)
     next_update = models.DateTimeField(null=True, blank=True, serialize=False)
     owner = models.ForeignKey(User, null=True, blank=True, serialize=False)
+
+    class Meta:
+        app_label = 'data'
 
     def natural_key(self):
         return (self.name,)
@@ -243,10 +249,11 @@ class Record(models.Model):
     def get_square_thumbnail_url(self):
         return self._get_thumbnail_url('square')
 
-    def get_image_url(self, force_reprocess=False, width=None, height=None):
+    def get_image_url(self, force_reprocess=False, width=None, height=None,
+                      handler=None):
         if width and height:
             url = reverse(
-                'storage-retrieve-image',
+                handler or 'storage-retrieve-image',
                 kwargs={
                     'recordid': self.id,
                     'record': self.name,
@@ -256,7 +263,7 @@ class Record(models.Model):
             )
         else:
             url = reverse(
-                'storage-retrieve-image-nosize',
+                handler or 'storage-retrieve-image-nosize',
                 kwargs={
                     'recordid': self.id,
                     'record': self.name
@@ -338,29 +345,36 @@ class Record(models.Model):
         for v in self.fieldvalue_set.all():
             v.dump(owner, collection)
 
+    def _get_field_value(self, field_name, hidden=False, standard='dc'):
+        fields = standardfield_ids(field_name, equiv=True, standard=standard)
+        values = self.fieldvalue_set.filter(
+            field__in=fields,
+            owner=None,
+            context_type=None)
+        if hidden is not None:
+            values = values.filter(hidden=hidden)
+        return values[0].value if values else None
+
     @property
     def title(self):
-        def get_title():
-            titlefields = standardfield_ids('title', equiv=True)
-            titles = self.fieldvalue_set.filter(
-                field__in=titlefields,
-                owner=None,
-                context_type=None,
-                hidden=False)
-            return titles[0].value if titles else None
-        return get_title() if self.id else None
+        return self._get_field_value('title') if self.id else None
 
     @property
     def identifier(self):
-        def get_identifier():
-            idfields = standardfield_ids('identifier', equiv=True)
-            identifiers = self.fieldvalue_set.filter(
-                field__in=idfields,
-                owner=None,
-                context_type=None,
-                hidden=False)
-            return identifiers[0].value if identifiers else None
-        return get_identifier() if self.id else None
+        return self._get_field_value('identifier') if self.id else None
+
+    @property
+    def work_title(self):
+        work_title = self._get_field_value(
+            'title', standard='vra') if self.id else None
+        return work_title or self.title
+
+    @property
+    def alt_text(self):
+        return (
+            self._get_field_value('alt-text', standard='system', hidden=None)
+            or self.title
+        ) if self.id else None
 
     @property
     def shared(self):
@@ -453,6 +467,9 @@ class MetadataStandard(models.Model):
     name = models.SlugField(max_length=50, unique=True)
     prefix = models.CharField(max_length=16, unique=True)
 
+    class Meta:
+        app_label = 'data'
+
     def natural_key(self):
         return (self.prefix,)
 
@@ -469,11 +486,15 @@ class Vocabulary(models.Model):
 
     class Meta:
         verbose_name_plural = "vocabularies"
+        app_label = 'data'
 
 
 class VocabularyTerm(models.Model):
     vocabulary = models.ForeignKey(Vocabulary)
     term = models.TextField()
+
+    class Meta:
+        app_label = 'data'
 
     def __unicode__(self):
         return self.term
@@ -498,8 +519,12 @@ class Field(models.Model):
     vocabulary = models.ForeignKey(
         Vocabulary, null=True, blank=True, serialize=False)
 
+    class Meta:
+        app_label = 'data'
+
     def natural_key(self):
         return (self.standard.prefix if self.standard else '', self.name,)
+
     natural_key.dependencies = ['data.MetadataStandard']
 
     def save(self, **kwargs):
@@ -537,6 +562,7 @@ class Field(models.Model):
         unique_together = ('name', 'standard')
         ordering = ['name']
         order_with_respect_to = 'standard'
+        app_label = 'data'
 
 
 @transaction.atomic
@@ -569,6 +595,7 @@ class FieldSet(models.Model):
 
     class Meta:
         ordering = ['title']
+        app_label = 'data'
 
     @staticmethod
     def for_user(user):
@@ -591,6 +618,7 @@ class FieldSetField(models.Model):
 
     class Meta:
         ordering = ['order']
+        app_label = 'data'
 
 
 class FieldValue(models.Model):
@@ -653,6 +681,7 @@ class FieldValue(models.Model):
         return FieldValue.BROWSE_VALUE_REGEX.sub('', value or '')[:32]
 
     class Meta:
+        app_label = 'data'
         ordering = ['order']
         index_together = [
             ['record', 'field'],
@@ -665,6 +694,10 @@ class DisplayFieldValue(FieldValue):
     """
     Represents a mapped field value for display.  Cannot be saved.
     """
+
+    class Meta:
+        app_label = 'data'
+
     def save(self, *args, **kwargs):
         raise NotImplementedError()
 
@@ -710,7 +743,10 @@ def standardfield(field, standard='dc', equiv=False):
 
 
 def standardfield_ids(field, standard='dc', equiv=False):
-    f = Field.objects.get(standard__prefix=standard, name=field)
+    try:
+        f = Field.objects.get(standard__prefix=standard, name=field)
+    except Field.DoesNotExist:
+        return []
     if equiv:
         ids = Field.objects.filter(
             Q(id=f.id) |
@@ -719,3 +755,12 @@ def standardfield_ids(field, standard='dc', equiv=False):
     else:
         ids = [f.id]
     return ids
+
+
+class RemoteMetadata(models.Model):
+
+    collection = models.ForeignKey('Collection')
+    storage = models.ForeignKey('storage.Storage')
+    url = models.CharField(max_length=255)
+    mapping_url = models.CharField(max_length=255)
+    last_modified = models.CharField(max_length=100, null=True, blank=True)

@@ -10,9 +10,13 @@ Vagrant.configure("2") do |config|
   # For a complete reference, please see the online documentation at
   # https://docs.vagrantup.com.
 
+  # Prevent TTY Errors (copied from laravel/homestead: "homestead.rb" file)...
+  # By default this is "bash -l".
+  config.ssh.shell = "bash -c 'BASH_ENV=/etc/profile exec bash'"
+
   # Every Vagrant development environment requires a box. You can search for
   # boxes at https://atlas.hashicorp.com/search.
-  config.vm.box = "ubuntu/xenial64"
+  config.vm.box = "ubuntu/bionic64"
 
   # Disable automatic box update checking. If you disable this, then
   # boxes will only be checked for updates when the user runs
@@ -23,6 +27,7 @@ Vagrant.configure("2") do |config|
   # within the machine from a port on the host machine. In the example below,
   # accessing "localhost:8080" will access port 80 on the guest machine.
   config.vm.network "forwarded_port", guest: 8800, host: 8800
+  config.vm.network "forwarded_port", guest: 8983, host: 8983
 
   # Create a private network, which allows host-only access to the machine
   # using a specific IP.
@@ -49,7 +54,10 @@ Vagrant.configure("2") do |config|
     #
     # Customize the amount of memory on the VM:
     vb.memory = "2048"
+
+    vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
   end
+
   #
   # View the documentation for the provider you are using for more
   # information on available options.
@@ -67,5 +75,4 @@ Vagrant.configure("2") do |config|
   config.vm.provision "main", type: "shell", path: "vagrant/provisioners/main.sh"
   config.vm.provision "mdid", type: "shell", path: "vagrant/provisioners/mdid.sh"
   config.vm.provision "supervisor", type: "shell", path: "vagrant/provisioners/supervisord.sh"
-
 end

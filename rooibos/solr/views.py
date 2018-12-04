@@ -87,8 +87,10 @@ class WorkSearchFacet(SearchFacet):
             comment = (' (+%d others)' % (len(values) - 1))
         for v in values:
             record = Record.get_primary_work_record(v)
-            if record and record.title:
-                return record.title + comment
+            if record:
+                title = record.work_title or record.title
+                if title:
+                    return title + comment
         return value
 
 
@@ -229,11 +231,17 @@ class ExactValueSearchFacet(SearchFacet):
 
     def __init__(self, name):
         prefix, name = ([None] + name[:-2].split('.'))[-2:]
-        if prefix:
-            field = Field.objects.get(standard__prefix=prefix, name=name)
-        else:
-            field = Field.objects.get(standard=None, name=name)
-        super(ExactValueSearchFacet, self).__init__(name, field.label)
+        try:
+            if prefix:
+                field = Field.objects.get(standard__prefix=prefix, name=name)
+            else:
+                field = Field.objects.get(standard=None, name=name)
+            label = field.label
+        except Field.DoesNotExist:
+            logger.exception(
+                'Cannot field field %r with prefix %r' % (name, prefix))
+            label = 'Error'
+        super(ExactValueSearchFacet, self).__init__(name, label)
 
     def process_criteria(self, criteria, *args, **kwargs):
         return '"' + _special.sub(r'\\\1', criteria) + '"'
@@ -499,15 +507,16 @@ def run_search(user,
             search_facets[f].set_result(facets.get(f))
 
     if orquery:
-        (f, v) = orquery.split(':', 1)
+        f, v = orquery.split(':', 1)
         orfacets = s.search(_generate_query(
             search_facets, user, collection, criteria, keywords, selected,
             remove, orquery),
             rows=0, facets=[f], facet_mincount=1, facet_limit=100)[2]
-        orfacet = copy.copy(search_facets[f])
-        orfacet.label = '%s in %s or...' % (v.replace("|", " or "),
-                                            orfacet.label)
-        orfacet.set_result(orfacets[f])
+        orfacet = copy.copy(search_facets[f]) if f in search_facets else None
+        if orfacet:
+            orfacet.label = '%s in %s or...' % (v.replace("|", " or "),
+                                                orfacet.label)
+            orfacet.set_result(orfacets[f])
     else:
         orfacet = None
 
@@ -815,7 +824,7 @@ def search_json(request, id=None, name=None, selected=False):
     return dict(html=html)
 
 
-def _get_browse_fields(collection_id):
+def _get_browse_fields(collection_id, child_collection_ids=None):
     fields = cache.get('browse_fields_%s' % collection_id)
     order = cache.get('browse_fields_order_%s' % collection_id)
     if fields and order:
@@ -831,7 +840,10 @@ def _get_browse_fields(collection_id):
                 fieldset = FieldSet.objects.get(name='browse-collections')
             except FieldSet.DoesNotExist:
                 pass
-        query = FieldValue.objects.filter(record__collection=collection_id)
+        collections = [collection_id]
+        if child_collection_ids:
+            collections.extend(child_collection_ids)
+        query = FieldValue.objects.filter(record__collection__in=collections)
         if fieldset:
             query = query.filter(
                 field__in=list(fieldset.fields.values_list('id', flat=True)))
@@ -886,7 +898,8 @@ def browse(request, id=None, name=None):
     if id:
         collection = get_object_or_404(collections, id=id)
         if collection:
-            fields = _get_browse_fields(collection.id)
+            fields = _get_browse_fields(
+                collection.id, list(collection.all_child_collections))
             if not fields:
                 return HttpResponseRedirect(reverse('solr-browse'))
 
@@ -921,7 +934,8 @@ def browse(request, id=None, name=None):
     ).values('browse_value').distinct().order_by('browse_value')
 
     if 's' in request.GET:
-        start = ivalues.filter(value__lt=request.GET['s']).count() / 50 + 1
+        start = ivalues.filter(
+            browse_value__lt=request.GET['s']).count() / 50 + 1
         return HttpResponseRedirect(reverse(
             'solr-browse-collection',
             kwargs={'id': collection.id, 'name': collection.name}) +
