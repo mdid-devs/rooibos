@@ -5,6 +5,7 @@ from django.core.urlresolvers import reverse
 from django.shortcuts import get_object_or_404, render_to_response
 from django.contrib.auth.models import User, Group
 from django.contrib.auth.decorators import login_required
+from django.contrib.staticfiles.templatetags.staticfiles import static
 from django.forms.models import modelformset_factory, ModelForm
 from django.db.models.aggregates import Count
 from django.conf import settings
@@ -27,6 +28,7 @@ from rooibos.storage import get_media_for_record
 from models import Presentation, PresentationItem
 from functions import duplicate_presentation
 import base64
+import os
 
 
 @login_required
@@ -318,7 +320,8 @@ def browse(request, manage=False):
     if manage and not request.user.is_authenticated():
         raise Http404()
 
-    if request.user.is_authenticated() and not request.GET.items():
+    if request.user.is_authenticated() and not request.GET.items() and \
+            not getattr(settings, 'FORGET_PRESENTATION_BROWSE_FILTER', False):
         # retrieve past settings
         qs = load_settings(
             request.user, filter='presentation_browse_querystring')
@@ -635,19 +638,30 @@ def get_id(request, *args):
     return 'http:%s/iiif/%s' % (server, s)
 
 
-def slide_manifest(request, slide, owner):
+def get_metadata(fieldvalues):
+    compact = getattr(settings, 'COMPACT_METADATA_VIEW', False)
+    result = []
+    for fv in fieldvalues:
+        if not compact or not fv.subitem:
+            result.append(dict(label=fv.resolved_label, value=fv.value))
+        else:
+            result[-1]['value'] += '; ' + fv.value
+    return result
+
+
+def slide_manifest(request, slide, owner, offline=False):
 
     fieldvalues = slide.get_fieldvalues(owner=owner)
     title = slide.title_from_fieldvalues(fieldvalues) or 'Untitled',
     id = get_id(request, 'slide', 'canvas', 'slide%d' % slide.id)
     image = slide.record.get_image_url(
-        force_reprocess=getattr(settings, 'FORCE_SLIDE_REPROCESS', False),
+        force_reprocess=False,
         handler='storage-retrieve-iiif-image',
     )
 
-    metadata = [
-        dict(label=fv.resolved_label, value=fv.value) for fv in fieldvalues
-    ]
+    metadata = get_metadata(fieldvalues)
+    if slide.annotation:
+        metadata.insert(0, dict(label='Annotation', value=slide.annotation))
 
     passwords = request.session.get('passwords', dict())
     media = get_media_for_record(slide.record, request.user, passwords)
@@ -658,32 +672,48 @@ def slide_manifest(request, slide, owner):
         canvas_height = height = media.height or 1200
     else:
         width = height = None
-        canvas_width = 1600
+        canvas_width = 1200
         canvas_height = 1200
 
     while canvas_height < 1200 or canvas_width < 1200:
         canvas_height *= 2
         canvas_width *= 2
 
-    images = [{
-        '@type': 'oa:Annotation',
-        'motivation': 'sc:painting',
-        'resource': {
+    if width and height:
+
+        resource = {
             '@id': image,
             '@type': 'dctypes:Image',
             'format': 'image/jpeg',
-            'service': {
+            "height": height,
+            "width": width
+        }
+
+        if not offline:
+            resource['service'] = {
                 '@context': 'http://iiif.io/api/image/2/context.json',
                 '@id': image,
                 'profile': 'http://iiif.io/api/image/2/level1.json'
-            },
-            "height": height,
-            "width": width
-        },
-        'on': id,
-    }] if width and height else []
+            }
 
-    return {
+        images = [{
+            '@type': 'oa:Annotation',
+            'motivation': 'sc:painting',
+            'resource': resource,
+            'on': id,
+        }]
+
+    else:
+
+        return special_slide(
+            request,
+            kind='missing',
+            label='Missing image',
+            index=slide.id,
+            offline=offline,
+        )
+
+    result = {
         '@id': id,
         '@type': 'sc:Canvas',
         'label': title,
@@ -693,38 +723,58 @@ def slide_manifest(request, slide, owner):
         'metadata': metadata,
     }
 
+    if offline:
+        result['thumbnail'] = {
+            '@id': '/thumbs' + image ,
+        }
 
-def blank_slide(request):
-    image = reverse('presentation-blank-slide', kwargs={'extra': ''})
-    id = get_id(request, 'slide', 'canvas', 'slide0')
-    return {
+    return result
+
+
+def special_slide(request, kind, label, index=None, offline=False):
+    image = reverse(
+        'presentation-%s-slide' % kind,
+        kwargs={'extra': str(index) if index else ''}
+    )
+    id = get_id(request, 'slide', 'canvas', 'slide%d' % (index or 0))
+    resource = {
+        '@id': image,
+        '@type': 'dctypes:Image',
+        'format': 'image/jpeg',
+        "height": 100,
+        "width": 100
+    }
+    if not offline:
+        resource['service'] = {
+            '@context': 'http://iiif.io/api/image/2/context.json',
+            '@id': image,
+            'profile': 'http://iiif.io/api/image/2/level1.json'
+        }
+
+    result = {
         '@id': id,
         '@type': 'sc:Canvas',
-        'label': 'End of presentation',
+        'label': label,
         "height": 100,
         "width": 100,
         'images': [{
             '@type': 'oa:Annotation',
             'motivation': 'sc:painting',
-            'resource': {
-                '@id': image,
-                '@type': 'dctypes:Image',
-                'format': 'image/jpeg',
-                'service': {
-                    '@context': 'http://iiif.io/api/image/2/context.json',
-                    '@id': image,
-                    'profile': 'http://iiif.io/api/image/2/level1.json'
-                },
-                "height": 100,
-                "width": 100
-            },
+            'resource': resource,
             'on': id,
         }],
         'metadata': [],
     }
 
-@json_view
-def manifest(request, id, name):
+    if offline:
+        result['thumbnail'] = {
+            '@id': image,
+        }
+
+    return result
+
+
+def raw_manifest(request, id, name, offline=False):
     p = Presentation.get_by_id_for_request(id, request)
     if not p:
         return dict(result='error')
@@ -736,7 +786,7 @@ def manifest(request, id, name):
         '@context': reverse(manifest, kwargs=dict(id=p.id, name=p.name)),
         '@type': 'sc:Manifest',
         '@id': get_id(
-            request, 'presentation', 'presentatation%d' % p.id, 'manifest'),
+            request, 'presentation', 'presentation%d' % p.id, 'manifest'),
         'label': p.title,
         'metadata': [],
         'description': p.description,
@@ -746,17 +796,30 @@ def manifest(request, id, name):
             '@type': 'sc:Range',
             'label': 'All slides',
             'canvases': [
-                slide_manifest(request, slide, owner) for slide in slides
+                slide_manifest(
+                    request,
+                    slide,
+                    owner,
+                    offline=offline,
+                ) for slide in slides
             ] + [
-                blank_slide(request)
+                special_slide(
+                    request,
+                    kind='blank',
+                    label='End of presentation',
+                    offline=offline,
+                )
             ]
         }],
     }
 
 
+manifest = json_view(raw_manifest)
+
+
 def transparent_png(request, extra):
 
-    if extra == 'info.json':
+    if extra and extra.endswith('info.json'):
         return HttpResponse(
             content='{"profile": ["http://iiif.io/api/image/2/level2.json", {"supports": ["canonicalLinkHeader", "profileLinkHeader", "mirroring", "rotationArbitrary", "regionSquare", "sizeAboveFull"], "qualities": ["default"], "formats": ["png"]}], "protocol": "http://iiif.io/api/image", "sizes": [], "height": 100, "width": 100, "@context": "http://iiif.io/api/image/2/context.json", "@id": "' + reverse('presentation-blank-slide', kwargs={'extra': ''}) + '"}',
             content_type='application/json',
@@ -768,3 +831,21 @@ def transparent_png(request, extra):
         content=base64.b64decode(DATA),
         content_type='image/png',
     )
+
+
+def missing_png(request, extra):
+
+    if extra and extra.endswith('info.json'):
+        return HttpResponse(
+            content='{"profile": ["http://iiif.io/api/image/2/level2.json", {"supports": ["canonicalLinkHeader", "profileLinkHeader", "mirroring", "rotationArbitrary", "regionSquare", "sizeAboveFull"], "qualities": ["default"], "formats": ["png"]}], "protocol": "http://iiif.io/api/image", "sizes": [], "height": 200, "width": 200, "@context": "http://iiif.io/api/image/2/context.json", "@id": "' + reverse('presentation-missing-slide', kwargs={'extra': ''}) + '"}',
+            content_type='application/json',
+        )
+
+    path = os.path.join(
+        os.path.dirname(__file__),
+        'static', 'presentation', 'image_unavailable.jpg')
+    with open(path, 'rb') as thumbnail:
+        return HttpResponse(
+            content=thumbnail.read(),
+            content_type='image/png',
+        )

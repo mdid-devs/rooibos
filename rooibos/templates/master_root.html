@@ -85,7 +85,7 @@
                 {% if COPYRIGHT %}
                 {{ COPYRIGHT|safe }}
                 {% else %}
-                Copyright 2018 vrcHost<br />
+                Copyright 2020 vrcHost<br />
                 {% endif %}
             </div>
 {% endblock %}
@@ -207,6 +207,8 @@
             </div>
         </div>
     </div>
+
+    <form style="display: none;" id="csrf-token-form">{% csrf_token %}</form>
 {% endspaceless %}
 {% endblock %}
 
@@ -245,23 +247,7 @@
     <script type="text/javascript">
         var ajaxManager = $.manageAjax.create('defaultQueue', { queue: true });
         var ajaxInteractionManager = $.manageAjax.create('interactionQueue', { queue: true });
-
-        function getCookie(name) {
-            var cookieValue = null;
-            if (document.cookie && document.cookie != '') {
-                var cookies = document.cookie.split(';');
-                for (var i = 0; i < cookies.length; i++) {
-                    var cookie = jQuery.trim(cookies[i]);
-                    // Does this cookie string begin with the name we want?
-                    if (cookie.substring(0, name.length + 1) == (name + '=')) {
-                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
-                        break;
-                    }
-                }
-            }
-            return cookieValue;
-        }
-        var csrftoken = getCookie('csrftoken');
+        var csrftoken = jQuery("#csrf-token-form [name=csrfmiddlewaretoken]").val();
 
         // CSRF handling for AJAX requests
         function csrfSafeMethod(method) {
@@ -584,9 +570,12 @@
                 else
                     $("#basket-content").slideUp();
             }
-            function showBasket() {
+            function showBasket(immediate) {
                 $("#basket-toggle").text("Hide");
-                $("#basket-content").slideDown();
+                if (immediate)
+                    $("#basket-content").show();
+                else
+                    $("#basket-content").slideDown();
                 basket_scroll_arrows();
             }
 
@@ -594,8 +583,14 @@
                 e.preventDefault();
                 basket_open = !basket_open;
                 store_profile_setting('ui_basket_open', basket_open);
+                $.cookie('ui_basket_open', basket_open, {path: '/'});
                 if (basket_open) showBasket(); else hideBasket();
             });
+
+            {% if not user.is_authenticated %}
+            basket_open = $.cookie('ui_basket_open') == 'true'
+            if (basket_open) { showBasket(true); }
+            {% endif %}
 
             if (!basket_open) {
                 hideBasket(true);

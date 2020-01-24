@@ -154,10 +154,12 @@
     <field name="tag" type="string" indexed="true" stored="true" multiValued="true"/>
     <field name="ownedtag" type="string" indexed="true" stored="false" multiValued="true"/>
 
+    <!-- since we're copying everything above, no need for these specifics:
     <copyField source="tag" dest="_text_"/>
 
     <copyField source="*_t" dest="_text_"/>
     <copyField source="filecontent" dest="_text_"/>
+    -->
 
     <!-- Dynamic field definitions allow using convention over configuration
        for fields via the specification of patterns to match field names.
@@ -398,6 +400,7 @@
 	  -->
     <fieldType name="text_general" class="solr.TextField" positionIncrementGap="100" multiValued="true">
         <analyzer type="index">
+            <charFilter class="solr.MappingCharFilterFactory" mapping="mapping-FoldToASCII.txt"/>
             <tokenizer class="solr.StandardTokenizerFactory"/>
             <filter class="solr.StopFilterFactory" ignoreCase="true" words="stopwords.txt"/>
             <!-- in this example, we will only use synonyms at query time
@@ -407,6 +410,7 @@
             <filter class="solr.LowerCaseFilterFactory"/>
         </analyzer>
         <analyzer type="query">
+            <charFilter class="solr.MappingCharFilterFactory" mapping="mapping-FoldToASCII.txt"/>
             <tokenizer class="solr.StandardTokenizerFactory"/>
             <filter class="solr.StopFilterFactory" ignoreCase="true" words="stopwords.txt"/>
             <filter class="solr.SynonymGraphFilterFactory" synonyms="synonyms.txt" ignoreCase="true" expand="true"/>

@@ -10,3 +10,5 @@ rooibos/static/cache/*
 .vagrant/
 *.log
 temp/
+.env/
+travis-build/

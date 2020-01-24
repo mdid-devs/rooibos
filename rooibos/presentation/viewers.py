@@ -12,6 +12,8 @@ from rooibos.storage import get_image_for_record
 from rooibos.data.models import Record
 from rooibos.api.views import presentation_detail
 from models import Presentation
+from .views import get_metadata
+from .mirador_package import MiradorPackageViewer
 from reportlab.pdfgen import canvas
 from reportlab.lib import pagesizes
 from reportlab.lib.units import inch
@@ -21,9 +23,21 @@ from reportlab.platypus import flowables
 from reportlab.platypus.paragraph import Paragraph
 from reportlab.platypus.frames import Frame
 from reportlab.platypus.doctemplate import BaseDocTemplate, PageTemplate
+from BeautifulSoup import BeautifulSoup
 import re
 import zipfile
 import os
+import logging
+
+
+logger = logging.getLogger(__name__)
+
+
+USE_MIRADOR = not getattr(settings, 'DISABLE_MIRADOR_VIEWER', False)
+
+
+# Exceptions that may be raised when building a paragraph
+PARAGRAPH_EXCEPTIONS = (AttributeError, KeyError, IndexError, ValueError)
 
 
 def _get_presentation(obj, request, objid):
@@ -37,6 +51,20 @@ def _get_presentation(obj, request, objid):
     return obj
 
 
+def _clean_for_render(text):
+    whitelist = ['backColor', 'backcolor', 'bgcolor',
+                 'color', 'fg', 'fontName', 'fontSize',
+                 'fontname', 'fontsize', 'href', 'name',
+                 'textColor', 'textcolor']
+    html = BeautifulSoup(text)
+    html.attrs = None
+    for e in html.findAll(True):
+        for attribute in e.attrs:
+            if attribute[0] not in whitelist:
+                del e[attribute[0]]
+    return unicode(html)
+
+
 class PresentationViewer(Viewer):
 
     title = "View"
@@ -44,26 +72,37 @@ class PresentationViewer(Viewer):
 
     def view(self, request):
         return_url = request.GET.get('next', reverse('presentation-browse'))
+        manifest_url = reverse(
+            'presentation-manifest', args=(self.obj.id, self.obj.name))
         return render_to_response(
-            'presentation_viewer.html',
+            getattr(
+                settings,
+                'PRESENTATION_VIEWER_TEMPLATE',
+                'presentation_viewer.html'
+            ),
             {
                 'presentation': self.obj,
                 'return_url': return_url,
+                'manifest_url': manifest_url,
             },
             context_instance=RequestContext(request)
         )
 
 
-@register_viewer('presentationviewer', PresentationViewer)
 def presentationviewer(obj, request, objid=None):
     presentation = _get_presentation(obj, request, objid)
     return PresentationViewer(
         presentation, request.user) if presentation else None
 
 
+if USE_MIRADOR:
+    register_viewer('presentationviewer', PresentationViewer) \
+        (presentationviewer)
+
+
 class PresentationViewerOld(Viewer):
 
-    title = "View (classic)"
+    title = "View (classic)" if USE_MIRADOR else "View"
     weight = 99
 
     def view(self, request):
@@ -78,7 +117,10 @@ class PresentationViewerOld(Viewer):
         )
 
 
-@register_viewer('presentationviewer_classic', PresentationViewerOld)
+@register_viewer(
+    'presentationviewer' + ('_classic' if USE_MIRADOR else ''),
+    PresentationViewerOld
+)
 def presentationviewer(obj, request, objid=None):
     presentation = _get_presentation(obj, request, objid)
     return PresentationViewerOld(
@@ -145,7 +187,8 @@ class FlashCardViewer(Viewer):
         def get_paragraph(*args, **kwargs):
             try:
                 return Paragraph(*args, **kwargs)
-            except (AttributeError, IndexError):
+            except PARAGRAPH_EXCEPTIONS:
+                logger.exception('Error building paragraph')
                 return None
 
         def draw_card(index, item):
@@ -159,7 +202,7 @@ class FlashCardViewer(Viewer):
 
             if record:
                 image = get_image_for_record(
-                    record, presentation.owner, 800, 800, passwords)
+                    record, self.user, 800, 800, passwords)
                 if image:
                     p.drawImage(
                         image,
@@ -182,24 +225,29 @@ class FlashCardViewer(Viewer):
                 data = []
                 data.append(get_paragraph(
                     '%s/%s' % (index + 1, len(items)), styles['SlideNumber']))
-                values = item.get_fieldvalues(owner=request.user)
+                values = get_metadata(item.get_fieldvalues(owner=request.user))
                 for value in values:
-                    v = value.value \
-                        if len(value.value) < 100 \
-                        else value.value[:100] + '...'
+                    v = _clean_for_render(value['value'])
                     data.append(get_paragraph(
-                        '<b>%s:</b> %s' % (value.resolved_label, v),
+                        '<b>%s:</b> %s' % (value['label'], v),
                         styles['Data'])
                     )
                 annotation = item.annotation
                 if annotation:
+                    annotation = _clean_for_render(annotation)
                     data.append(get_paragraph(
                         '<b>%s:</b> %s' % ('Annotation', annotation),
                         styles['Data'])
                     )
                 data = filter(None, data)
-                f.addFromList(data, p)
-                if data:
+                incomplete = False
+                while data:
+                    f.addFromList(data, p)
+                    if data:
+                        data = data[1:]
+                        incomplete = True
+
+                if incomplete:
                     p.setFont('Helvetica', 8)
                     p.setFillColorRGB(0, 0, 0)
                     p.drawRightString(width - inch / 2, inch / 2, '...')
@@ -327,24 +375,27 @@ class PrintViewViewer(Viewer):
 
         for index, item in enumerate(items):
             text = []
-            values = item.get_fieldvalues(owner=request.user)
+            values = get_metadata(item.get_fieldvalues(owner=request.user))
             for value in values:
+                v = _clean_for_render(value['value'])
                 text.append(
                     '<b>%s</b>: %s<br />' % (
-                        value.resolved_label, value.value
+                        value['label'], v
                     )
                 )
             annotation = item.annotation
             if annotation:
+                annotation = _clean_for_render(annotation)
                 text.append('<b>%s</b>: %s<br />' % ('Annotation', annotation))
             try:
                 p = Paragraph(''.join(text), styles['Normal'])
-            except (AttributeError, KeyError, IndexError):
+            except PARAGRAPH_EXCEPTIONS:
                 # this sometimes triggers an error in reportlab
+                logger.exception('Error building paragraph')
                 p = None
             if p:
                 image = get_image_for_record(
-                    item.record, presentation.owner, 100, 100, passwords)
+                    item.record, self.user, 100, 100, passwords)
                 if image:
                     try:
                         i = flowables.Image(image, kind='proportional',
@@ -474,4 +525,11 @@ class PackageFilesViewer(Viewer):
 def packagefilesviewer(obj, request, objid=None):
     presentation = _get_presentation(obj, request, objid)
     return PackageFilesViewer(
+        presentation, request.user) if presentation else None
+
+
+@register_viewer('miradorpackageviewer', MiradorPackageViewer)
+def miradorpackageviewer(obj, request, objid=None):
+    presentation = _get_presentation(obj, request, objid)
+    return MiradorPackageViewer(
         presentation, request.user) if presentation else None

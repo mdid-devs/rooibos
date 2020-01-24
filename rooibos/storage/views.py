@@ -1,4 +1,5 @@
 from __future__ import with_statement
+from functools import wraps
 from django.contrib import messages
 from datetime import datetime
 from django import forms
@@ -15,7 +16,7 @@ from django.template import RequestContext
 from django.template.loader import render_to_string
 import json as simplejson
 from django.utils.encoding import smart_str
-from django.views.decorators.cache import cache_control
+from django.views.decorators.cache import cache_control, patch_cache_control
 from django.views.decorators.csrf import csrf_exempt
 from django.contrib.contenttypes.models import ContentType
 from django.template.defaultfilters import filesizeformat
@@ -38,9 +39,10 @@ from .tasks import storage_match_up_media, analyze_media_task
 
 
 def add_content_length(func):
+    @wraps(func)
     def _add_header(request, *args, **kwargs):
         response = func(request, *args, **kwargs)
-        if type(response) == HttpResponse:
+        if type(response) == HttpResponse and hasattr(response, '_container'):
             if hasattr(response._container, 'size'):
                 response['Content-Length'] = response._container.size
             elif isinstance(response._container, file):
@@ -114,6 +116,14 @@ def retrieve(request, recordid, record, mediaid, media):
     return retval
 
 
+def safe_filename(filename):
+    keepcharacters = (' ', '.', '_')
+    return "".join(
+        c for c in filename
+        if c.isalnum() or c in keepcharacters
+    ).rstrip()
+
+
 @add_content_length
 @cache_control(private=True, max_age=3600)
 def retrieve_image(request, recordid, record, width=None, height=None):
@@ -150,9 +160,9 @@ def retrieve_image(request, recordid, record, width=None, height=None):
             # prevent duplication
             if record.endswith('jpg'):
                 record = record[:-3]
-            name = record_obj.title or record
+            name = safe_filename(smart_str(record_obj.title or record))
             response["Content-Disposition"] = \
-                'attachment; filename="%s.jpg"' % smart_str(name)
+                'attachment; filename="%s.jpg"' % name
         return response
     except IOError:
         logging.error("IOError: %s" % path)
@@ -249,7 +259,6 @@ def media_delete(request, mediaid, medianame):
 
 
 @add_content_length
-@cache_control(private=True, max_age=3600)
 def record_thumbnail(request, id, name):
     force_reprocess = request.GET.get('reprocess') == 'true'
     filename = get_thumbnail_for_record(
@@ -266,14 +275,19 @@ def record_thumbnail(request, id, name):
             )
         )
         try:
-            return HttpResponse(
+            response = HttpResponse(
                 content=open(filename, 'rb').read(),
                 content_type='image/jpeg'
             )
+            patch_cache_control(response, private=True, max_age=3600)
+            return response
         except IOError:
             logging.error("IOError: %s" % filename)
-    return HttpResponseRedirect(
+
+    response = HttpResponseRedirect(
         reverse('static', args=('images/thumbnail_unavailable.png',)))
+    patch_cache_control(response, no_cache=True)
+    return response
 
 
 @json_view
@@ -374,7 +388,7 @@ def manage_storage(request, storageid=None, storagename=None):
 
         class Meta:
             model = Storage
-            fields = ('title', 'system', 'base', 'urlbase', 'deliverybase')
+            fields = ('title', 'system', 'base', 'credential_id', 'credential_key', 'urlbase', 'deliverybase')
 
     if request.method == "POST":
         if request.POST.get('delete-storage'):
@@ -437,7 +451,7 @@ def import_files(request):
                         '*' if c.id in writable_collection_ids else '', c.title
                     )
                 )
-                for c in sorted(available_collections, key=lambda c: c.title)
+                for c in available_collections
             )
         )
         storage = forms.ChoiceField(choices=storage_choices)
@@ -628,7 +642,7 @@ def match_up_files(request):
         collection = forms.ChoiceField(
             choices=(
                 (c.id, c.title)
-                for c in sorted(available_collections, key=lambda c: c.title)
+                for c in available_collections
             )
         )
         storage = forms.ChoiceField(choices=available_storage)
@@ -709,7 +723,7 @@ def find_records_without_media(request):
         collection = forms.ChoiceField(
             choices=(
                 (c.id, c.title)
-                for c in sorted(available_collections, key=lambda c: c.title)
+                for c in available_collections
             )
         )
         storage = forms.ChoiceField(choices=available_storage)
@@ -773,7 +787,8 @@ def retrieve_iiif_image(request, recordid, record):
         recordid,
         request.user,
         passwords=passwords,
-        force_reprocess=force_reprocess
+        force_reprocess=force_reprocess,
+        loris_name=True,  # Loris does not deal with spaces in filenames
     )
     if not path:
         logging.error(

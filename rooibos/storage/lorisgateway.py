@@ -37,11 +37,11 @@ def handle_loris_request(request, filepath, record_id, record_name):
     config['logging']['log_level'] = 'DEBUG'
 
     config['logging']['log_dir'] = os.path.join(
-        settings.SCRATCH_DIR, '..', 'log')
+        settings.SCRATCH_DIR, 'loris_log')
     if not os.path.exists(config['logging']['log_dir']):
         os.makedirs(config['logging']['log_dir'])
     config['loris.Loris']['tmp_dp'] = os.path.join(
-        settings.SCRATCH_DIR, 'loris')
+        settings.SCRATCH_DIR, 'loris_tmp')
     if not os.path.exists(config['loris.Loris']['tmp_dp']):
         os.makedirs(config['loris.Loris']['tmp_dp'])
     config['loris.Loris']['enable_caching'] = False
@@ -68,12 +68,14 @@ def handle_loris_request(request, filepath, record_id, record_name):
     response = loris.route(werkzeug_request)
 
     if response.status_code != 200:
-        return Http404()
+        raise Http404()
 
-    return HttpResponse(
+    http_response = HttpResponse(
         content=response.get_data(),
         content_type=response.headers['Content-Type'],
     )
+    http_response['Access-Control-Allow-Origin'] = '*'
+    return http_response
 
 
 LORIS_CONF = """

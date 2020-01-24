@@ -1,4 +1,17 @@
+/* global Mirador, jQuery */
+
 var Viewer = function (options) {
+
+    "use strict";
+    var OpenSeadragon = Mirador.OpenSeadragon;
+    Mirador.OpenSeadragon = function (options) {
+        return OpenSeadragon(jQuery.extend({}, options, {
+            minZoomImageRatio: 0.1,
+            maxZoomPixelRatio: 3.0,
+            visibilityRatio: 0.2
+        }));
+    };
+
 
     this.mirador = Mirador(options);
     var viewer = this;
@@ -13,8 +26,22 @@ var Viewer = function (options) {
         this.active = {
             window: 0,
             slot: 0
-        }
+        };
     }
+
+    this.toggleAnnotationFontSize = function () {
+        forEachWindow(function (w) {
+            w.viewer.mirador.viewer.element.toggleClass(
+                'annotation-large-font');
+        });
+    };
+
+    this.toggleViewerTitle = function () {
+        forEachWindow(function (w) {
+            w.viewer.mirador.viewer.element.toggleClass(
+                'viewer-title');
+        });
+    };
 
     this.additionalWindow = function () {
         var next = getNextCanvases()[0];
@@ -112,7 +139,10 @@ var Viewer = function (options) {
         }
     };
 
+    var metaKey;
+
     var keydown = function (event) {
+        metaKey = event.metaKey;
         var distance = viewer.synced ? countUsedCanvases() : 1;
         if (event.key === 'ArrowLeft') {
             forEachWindowAndImageViewer(whenActive(function (imageView) {
@@ -146,6 +176,9 @@ var Viewer = function (options) {
                     .find('.mirador-canvas-metadata-toggle').click();
             }));
         } else
+        if (event.key === 't') {
+            viewer.toggleViewerTitle();
+        } else
         if (event.key === 'ArrowUp') {
             forEachWindowAndImageViewer(whenActive(function (imageView) {
                 jQuery(imageView.element)
@@ -163,25 +196,29 @@ var Viewer = function (options) {
                 layoutDescription:
                     Mirador.layoutDescriptionFromGridString('1x1')
             });
-            delayWrapper(viewer.markAsActive.bind(viewer))();
+            delay(viewer.markAsActive.bind(viewer));
         } else
         if (event.key === 'y') {
             emitEvent('RESET_WORKSPACE_LAYOUT', {
                 layoutDescription:
                     Mirador.layoutDescriptionFromGridString('1x2')
             });
-            delayWrapper(viewer.markAsActive.bind(viewer))();
+            delay(viewer.markAsActive.bind(viewer));
         } else
         if (event.key === 'x') {
             emitEvent('RESET_WORKSPACE_LAYOUT', {
                 layoutDescription:
                     Mirador.layoutDescriptionFromGridString('2x1')
             });
-            delayWrapper(viewer.markAsActive.bind(viewer))();
+            delay(viewer.markAsActive.bind(viewer));
         } else
         if (event.key === 'f') {
             emitEvent('TOGGLE_FULLSCREEN');
         }
+    };
+
+    var keyup = function (event) {
+        metaKey = event.metaKey;
     };
 
     var eventWrapper = function (eventHandler, onlyWhenSynced) {
@@ -214,14 +251,12 @@ var Viewer = function (options) {
     }();
 
     document.addEventListener('keydown', eventWrapper(keydown), true);
+    document.addEventListener('keyup', keyup, true);
     document.addEventListener('mousemove', mouseMove);
 
 
-    var delayWrapper = function (callback) {
-        return function () {
-            setTimeout(callback);
-        };
-    };
+    var delay = setTimeout;
+
 
     var getUsedCanvases = function () {
         return viewer.mirador.viewer.workspace.slots.map(function (slot) {
@@ -229,14 +264,21 @@ var Viewer = function (options) {
         });
     };
 
+
+    var _manifest;
+
     var getManifest = function () {
+        if (_manifest) {
+            return _manifest;
+        }
         var manifests =
             viewer.mirador.viewer.state.getStateProperty('manifests');
         for (var manifest in manifests) {
             if (!manifests.hasOwnProperty(manifest)) {
                 continue;
             }
-            return manifests[manifest];
+            _manifest = manifests[manifest];
+            return _manifest;
         }
     };
 
@@ -262,8 +304,8 @@ var Viewer = function (options) {
     };
 
     var fillEmptySlots = function () {
-        var next = getNextCanvases();
         var manifest = getManifest();
+        var next = getNextCanvases();
         viewer.mirador.viewer.workspace.slots.forEach(function (slot) {
             if (!slot.window) {
                 var windowConfig = {
@@ -311,12 +353,96 @@ var Viewer = function (options) {
     };
 
 
-    this.mirador.eventEmitter.subscribe(
-        'RESET_WORKSPACE_LAYOUT', delayWrapper(fillEmptySlots));
+    this.mirador.eventEmitter.subscribe('RESET_WORKSPACE_LAYOUT',
+        function () {
+            if (!metaKey) {
+                delay(fillEmptySlots);
+            }
+
+        }
+    );
+
 
     this.mirador.eventEmitter.subscribe('ADD_WINDOW', function () {
-        delayWrapper(viewer.markAsActive.bind(viewer))();
+        delay(viewer.markAsActive.bind(viewer));
     });
+
+
+    this.mirador.eventEmitter.subscribe('windowSlotAdded', function (e, w) {
+        // this event is triggered on window initialization, so we use it
+        // to hook up the navigation event
+        viewer.mirador.eventEmitter.subscribe(
+            'DESTROY_EVENTS.' + w.id,
+            function () {
+                delay(updateTitles);
+                viewer.mirador.eventEmitter.subscribe(
+                    'currentCanvasIDUpdated.' + w.id, updateTitles
+                );
+            }
+        );
+    });
+
+
+    this.mirador.eventEmitter.subscribe('TOGGLE_FULLSCREEN', function () {
+        // Mirador hides bottom panel control in fullscreen, keep it visible
+        delay(function () {
+            viewer.forEachImageView(function (imageView) {
+                imageView.element.find(
+                    '.mirador-osd-toggle-bottom-panel').show();
+            });
+        }, 500);
+    });
+
+
+    var updateTitles = function () {
+        var manifest = getManifest();
+        var canvases = manifest.jsonLd.sequences[0].canvases;
+
+        forEachWindowAndImageViewer(function (imageView) {
+            var canvasID = imageView.canvasID;
+            canvases.forEach(function (canvas) {
+                if (canvas['@id'] === canvasID) {
+                    imageView.element
+                        .parents('.window')
+                        .find('.window-manifest-title')
+                        .text(canvas.label);
+
+                    var metadata = imageView.element
+                        .find('.mirador-canvas-metadata');
+                    if (!metadata.draggable('instance')) {
+                        metadata.draggable({
+                            axis: 'y',
+                            drag: function (event, ui) {
+                                var minTop =
+                                    metadata.offsetParent().height() / 4;
+                                var maxTop = minTop * 4 * 95 / 100;
+                                ui.position.top = Math.max(
+                                    minTop, ui.position.top);
+                                ui.position.top = Math.min(
+                                    maxTop, ui.position.top);
+                            }
+                        });
+                    }
+                }
+            });
+        });
+    };
+
+
+    this.mirador.eventEmitter.subscribe(
+        'manifestReceived', function (event, manifest) {
+            // if sequence items don't have metadata, copy manifest metadata
+            // into each sequence item
+            var metadata = manifest.jsonLd.metadata;
+            manifest.jsonLd.sequences.forEach(function (sequence) {
+                sequence.canvases.forEach(function (canvas) {
+                    if (!canvas.metadata || !canvas.metadata.length) {
+                        canvas.metadata = metadata;
+                    }
+                });
+            });
+        }
+    );
 
     return this;
 };

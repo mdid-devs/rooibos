@@ -1,4 +1,3 @@
-{% load compress %}
 {% load staticfiles %}
 <!DOCTYPE html>
 <html lang="en">
@@ -9,34 +8,34 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" type="text/css" href="{% static 'mirador/css/mirador-combined.css' %}">
     <link rel="stylesheet" type="text/css" href="{% static 'presentation/viewer.css' %}">
+    {% block stylesheets %}
+    {% endblock %}
 </head>
 
 <body>
 
 <div id="viewer"></div>
 
-{% compress js %}
 <script src="{% static 'mirador/mirador.js' %}"></script>
 <script src="{% static 'presentation/viewer.js' %}"></script>
-{% endcompress %}
 
 <script>
 
     var match = window.location.href.match(/[?&]canvas=([^&]+)/);
     var canvas = match ? match[1] : undefined;
 
-    var returnUrl = '{{ return_url|urlencode }}';
+    var returnUrl = '{{ return_url }}';
 
     var options = {
         id: "viewer",
         buildPath: "{% static 'mirador/' %}",
         data: [{
-            manifestUri: "{% url 'presentation-manifest' presentation.id presentation.name %}",
+            manifestUri: "{{ manifest_url }}",
             location: "{{ presentation.title }}"
         }],
         windowObjects: [{
             canvasID: canvas,
-            loadedManifest: "{% url 'presentation-manifest' presentation.id presentation.name %}"
+            loadedManifest: "{{ manifest_url }}"
         }],
         workspacePanelSettings: {
             'maxRows': 2,
@@ -71,14 +70,28 @@
         },
         mainMenuSettings: {
             userButtons: [{
-                label: 'Additional Window',
+                label: 'Title',
+                attributes: {
+                    id: 'toggle-viewer-title',
+                    href: 'javascript:window.viewer.toggleViewerTitle();'
+                },
+                iconClass: 'fa fa-header fa-lg fa-fw'
+            }, {
+                label: 'Font',
+                attributes: {
+                    id: 'toggle-annotation-font-size',
+                    href: 'javascript:window.viewer.toggleAnnotationFontSize();'
+                },
+                iconClass: 'fa fa-text-height fa-lg fa-fw'
+            }, {
+                label: 'New Window',
                 attributes: {
                     id: 'additional-window',
                     href: 'javascript:window.viewer.additionalWindow();'
                 },
                 iconClass: 'fa fa-plus-square fa-lg fa-fw'
             }, {
-                label: 'Sync Viewers',
+                label: 'Sync',
                 attributes: {
                     id: 'sync-viewers',
                     href: 'javascript:window.viewer.syncViewers();'
@@ -98,7 +111,7 @@
 
     if (returnUrl) {
         options.mainMenuSettings.userButtons.unshift({
-            label: 'Close Viewer',
+            label: 'Close',
             attributes: {
                 id: 'close-viewer',
                 href: 'javascript:window.location.assign(returnUrl);'
@@ -109,6 +122,9 @@
 
     window.viewer = new Viewer(options);
 </script>
+
+{% block javascript %}
+{% endblock %}
 
 </body>
 </html>
